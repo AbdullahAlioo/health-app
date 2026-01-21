@@ -1,0 +1,417 @@
+// ble_service.dart - UPDATED WITH HRV & RHR
+import 'dart:async';
+import 'dart:convert';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../local_storage_service.dart'; // Corrected import path
+import 'background_ble_service.dart';
+
+class HealthData {
+  final int heartRate;
+  final int steps;
+  final int spo2;
+  final int calories;
+  final double sleep;
+  final int recovery;
+  final int stress;
+  final int rhr;           // Resting Heart Rate
+  final int hrv;           // Heart Rate Variability
+  final double bodyTemperature;
+  final int breathingRate;
+
+  HealthData({
+    required this.heartRate,
+    required this.steps,
+    required this.spo2,
+    required this.calories,
+    required this.sleep,
+    required this.recovery,
+    required this.stress,
+    required this.rhr,
+    required this.hrv,
+    required this.bodyTemperature,
+    required this.breathingRate,
+  });
+
+  factory HealthData.fromJson(Map<String, dynamic> json) {
+    return HealthData(
+      heartRate: json['heartRate'] ?? 72,
+      steps: json['steps'] ?? 0,
+      spo2: json['spo2'] ?? 98,
+      calories: json['calories'] ?? 0,
+      sleep: (json['sleep'] ?? 7.0).toDouble(),
+      recovery: json['recovery'] ?? 85,
+      stress: json['stress'] ?? 30,
+      rhr: json['rhr'] ?? 65,
+      hrv: json['hrv'] ?? 45,
+      bodyTemperature: (json['bodyTemperature'] ?? 36.5).toDouble(),
+      breathingRate: json['breathingRate'] ?? 16,
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'heartRate': heartRate,
+      'steps': steps,
+      'spo2': spo2,
+      'calories': calories,
+      'sleep': sleep,
+      'recovery': recovery,
+      'stress': stress,
+      'rhr': rhr,
+      'hrv': hrv,
+      'bodyTemperature': bodyTemperature,
+      'breathingRate': breathingRate,
+    };
+  }
+
+  String getStressLevelText() {
+    if (stress <= 33) return 'Low';
+    if (stress <= 66) return 'Medium';
+    return 'High';
+  }
+
+  // NEW: Get HRV status
+  String getHRVStatus() {
+    if (hrv >= 60) return 'Excellent';
+    if (hrv >= 40) return 'Good';
+    if (hrv >= 30) return 'Fair';
+    return 'Poor';
+  }
+
+  // NEW: Get RHR status
+  String getRHRStatus() {
+    if (rhr <= 55) return 'Excellent';
+    if (rhr <= 65) return 'Good';
+    if (rhr <= 75) return 'Fair';
+    return 'Poor';
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is HealthData &&
+        other.heartRate == heartRate &&
+        other.steps == steps &&
+        other.spo2 == spo2 &&
+        other.calories == calories &&
+        other.sleep == sleep &&
+        other.recovery == recovery &&
+        other.stress == stress &&
+        other.rhr == rhr &&
+        other.hrv == hrv;
+  }
+
+  @override
+  int get hashCode {
+    return heartRate.hashCode ^
+        steps.hashCode ^
+        spo2.hashCode ^
+        calories.hashCode ^
+        sleep.hashCode ^
+        recovery.hashCode ^
+        stress.hashCode ^
+        rhr.hashCode ^
+        hrv.hashCode;
+  }
+}
+
+class BLEService {
+  static const String targetDeviceName = "ESP32_HealthBand";
+  static const String serviceUUID = "12345678-1234-1234-1234-123456789abc";
+  static const String characteristicUUID = "abcd1234-5678-90ab-cdef-123456789abc";
+  static const String lastDeviceKey = "last_connected_device";
+
+  BluetoothDevice? _connectedDevice;
+  BluetoothCharacteristic? _targetCharacteristic;
+  Timer? _fakeDataTimer;
+  Timer? _hourlyTimer;
+  Timer? _reconnectTimer;
+  bool _isSimulating = false;
+  bool _isConnected = false;
+  bool _isScanning = false;
+
+  final StreamController<bool> _connectionController = StreamController<bool>.broadcast();
+  final StreamController<HealthData> _dataController = StreamController<HealthData>.broadcast();
+  final LocalStorageService _localStorage = LocalStorageService();
+
+  // Public getters
+  Stream<bool> get connectionStream => _connectionController.stream;
+  Stream<HealthData> get dataStream => _dataController.stream;
+  bool get isConnected => _isConnected;
+
+  /// Initializes the BLE service and loads latest data
+  Future<void> initialize() async {
+    try {
+      _startHourlyProcessing();
+      final latestData = await _localStorage.getLatestHealthData();
+      if (latestData != null) {
+        // Convert to HealthData format and add to stream
+        final healthData = HealthData(
+          heartRate: latestData.heartRate,
+          steps: latestData.steps,
+          spo2: latestData.spo2,
+          calories: latestData.calories,
+          sleep: latestData.sleep,
+          recovery: latestData.recovery,
+          stress: latestData.stress,
+          hrv: latestData.hrv,
+          rhr: latestData.rhr,
+          bodyTemperature: latestData.bodyTemperature,
+          breathingRate: latestData.breathingRate,
+        );
+        _dataController.add(healthData);
+        print('Loaded latest saved data from local storage');
+      }
+    } catch (e) {
+      print('Error loading latest data: $e');
+    }
+  }
+
+  /// Starts hourly data processing timer
+  void _startHourlyProcessing() {
+    _hourlyTimer = Timer.periodic(const Duration(hours: 1), (timer) {
+      _processHourlyData();
+    });
+  }
+
+  /// Processes and aggregates hourly health data
+  Future<void> _processHourlyData() async {
+    try {
+      final oneHourAgo = DateTime.now().subtract(const Duration(hours: 1));
+      final now = DateTime.now();
+      
+      final hourlyAverages = await _localStorage.getHourlyAverages(oneHourAgo, now);
+      
+      print('Processed ${hourlyAverages.length} hourly data points for period: $oneHourAgo to $now');
+      
+      // Clean up old data periodically (keep last 30 days)
+      await _localStorage.clearOldData();
+    } catch (e) {
+      print('Error processing hourly data: $e');
+    }
+  }
+
+  /// Processes incoming health data and saves it to local storage
+  Future<void> _processAndSaveData(HealthData data) async {
+    try {
+      final now = DateTime.now();
+      
+      // Create data point with current timestamp
+      final dataPoint = HealthDataPoint(
+        heartRate: data.heartRate,
+        steps: data.steps,
+        spo2: data.spo2,
+        calories: data.calories,
+        sleep: data.sleep,
+        recovery: data.recovery,
+        timestamp: now,
+        stress: data.stress,
+        rhr: data.rhr,
+        hrv: data.hrv,
+        bodyTemperature: data.bodyTemperature,
+        breathingRate: data.breathingRate,
+      );
+
+      // Save to local storage
+      await _localStorage.saveHealthData(dataPoint);
+      
+      // Update data stream
+      _dataController.add(data);
+      
+      print('Data saved: ${now.toString()} - HR: ${data.heartRate}, Steps: ${data.steps}');
+      
+    } catch (e) {
+      print('Error processing data: $e');
+    }
+  }
+
+  /// Starts automatic reconnection attempts
+  void _startReconnectTimer() {
+    _stopReconnectTimer();
+    print('Starting reconnect timer...');
+    
+    _reconnectTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
+        for (ScanResult result in results) {
+          if (result.device.platformName == targetDeviceName) {
+            print('Found target device: ${result.device.platformName}');
+            subscription?.cancel();
+            await FlutterBluePlus.stopScan();
+            _isScanning = false;
+            bool connected = await _connectToDevice(result.device);
+            completer.complete(connected);
+            return;
+          }
+        }
+      });
+
+      // Timeout after 15 seconds
+      Future.delayed(const Duration(seconds: 15), () {
+        if (!completer.isCompleted) {
+          subscription?.cancel();
+          FlutterBluePlus.stopScan();
+          _isScanning = false;
+          completer.complete(false);
+          print('Scan timeout - device not found');
+        }
+      });
+
+      final result = await completer.future;
+      
+      if (!result) {
+        print('Scan completed - device not found');
+        _isConnected = false;
+      }
+      
+      return result;
+    } catch (e) {
+      print("Error scanning: $e");
+      _isScanning = false;
+      _isConnected = false;
+      return false;
+    }
+  }
+
+  /// Connects to a specific BLE device
+  Future<bool> _connectToDevice(BluetoothDevice device) async {
+    try {
+      print('Connecting to device: ${device.platformName}');
+      await device.connect(timeout: const Duration(seconds: 15));
+      
+      _connectedDevice = device;
+      _isConnected = true;
+      _connectionController.add(true);
+      _saveLastDevice(device.remoteId.toString());
+      
+      // ✅ CRITICAL: Save device address for background service
+      await BackgroundBLEService().saveDeviceAddress(device.remoteId.toString());
+      
+      List<BluetoothService> services = await device.discoverServices();
+      await _findTargetService(services);
+      _stopFakeData();
+      _stopReconnectTimer();
+      
+      print('Successfully connected to ${device.platformName}');
+      return true;
+    } catch (e) {
+      print("Error connecting to device: $e");
+      _isConnected = false;
+      _connectionController.add(false);
+      return false;
+    }
+  }
+
+  /// Subscribes to BLE characteristics for data updates
+  Future<void> _subscribeToCharacteristics(BluetoothDevice device) async {
+    try {
+      List<BluetoothService> services = await device.discoverServices();
+      await _findTargetService(services);
+    } catch (e) {
+      print("Error discovering services: $e");
+    }
+  }
+
+  /// Finds the target BLE service and characteristic
+  Future<void> _findTargetService(List<BluetoothService> services) async {
+    for (BluetoothService service in services) {
+      if (service.uuid.toString().toLowerCase() == serviceUUID) {
+        for (BluetoothCharacteristic characteristic in service.characteristics) {
+          if (characteristic.uuid.toString().toLowerCase() == characteristicUUID) {
+            _targetCharacteristic = characteristic;
+            await _startListeningToCharacteristics();
+            print('Found target characteristic - starting data stream');
+            return;
+          }
+        }
+      }
+    }
+    print('Warning: Target service or characteristic not found');
+  }
+
+  /// Starts listening to BLE characteristic notifications
+  Future<void> _startListeningToCharacteristics() async {
+    if (_targetCharacteristic == null) return;
+
+    try {
+      await _targetCharacteristic!.setNotifyValue(true);
+      
+      _targetCharacteristic!.onValueReceived.listen((value) async {
+        try {
+          String receivedData = String.fromCharCodes(value);
+          print('Received data: $receivedData');
+          Map<String, dynamic> jsonData = json.decode(receivedData);
+          HealthData healthData = HealthData.fromJson(jsonData);
+          
+          // Process and save the received data
+          await _processAndSaveData(healthData);
+        } catch (e) {
+          print("Error parsing data: $e");
+        }
+      });
+      
+      print('Successfully subscribed to characteristic notifications');
+    } catch (e) {
+      print("Error subscribing to characteristic: $e");
+    }
+  }
+
+
+  /// Stops generating fake/simulated health data
+  void _stopFakeData() {
+    if (!_isSimulating) return;
+    
+    _isSimulating = false;
+    _fakeDataTimer?.cancel();
+    _fakeDataTimer = null;
+    print('Stopped simulation mode - using real device data');
+  }
+
+  /// Saves the last connected device ID to SharedPreferences
+  Future<void> _saveLastDevice(String deviceId) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(lastDeviceKey, deviceId);
+      print('Saved last device ID: $deviceId');
+    } catch (e) {
+      print('Error saving last device: $e');
+    }
+  }
+
+  // Public method to get hourly averages for charts
+  Future<List<HealthDataPoint>> getHourlyAverages(DateTime startDate, DateTime endDate) async {
+    return await _localStorage.getHourlyAverages(startDate, endDate);
+  }
+
+  // Public method to get all health data
+  Future<List<HealthDataPoint>> getAllHealthData() async {
+    return await _localStorage.getAllHealthData();
+  }
+
+  // Public method to get latest health data
+  Future<HealthDataPoint?> getLatestHealthData() async {
+    return await _localStorage.getLatestHealthData();
+  }
+
+  /// Disconnects from the current BLE device
+  Future<void> disconnect() async {
+    if (_connectedDevice != null) {
+      print('Disconnecting from device: ${_connectedDevice!.platformName}');
+      await _connectedDevice!.disconnect();
+    }
+    _isConnected = false;
+    _connectionController.add(false);
+    _connectedDevice = null;
+    _targetCharacteristic = null;
+    _stopReconnectTimer();
+  }
+
+  /// Cleans up resources and closes streams
+  void dispose() {
+    print('Disposing BLE Service...');
+    _stopFakeData();
+    _stopReconnectTimer();
+    _hourlyTimer?.cancel();
+    _connectionController.close();
+    _dataController.close();
+  }
+}

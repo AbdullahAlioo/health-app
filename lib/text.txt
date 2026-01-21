@@ -1,0 +1,719 @@
+// metric_detail_screen.dart - PREMIUM VERSION
+import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:fl_chart/fl_chart.dart';
+import 'dart:async';
+import 'package:zyora_final/local_storage_service.dart';
+import 'package:zyora_final/services/ai_description_service.dart';
+
+class MetricDetailScreen extends StatefulWidget {
+  final String metricName;
+  final String currentValue;
+  final String unit;
+  final IconData icon;
+  final Color color;
+
+  const MetricDetailScreen({
+    super.key,
+    required this.metricName,
+    required this.currentValue,
+    required this.unit,
+    required this.icon,
+    required this.color,
+  });
+
+  @override
+  State<MetricDetailScreen> createState() => _MetricDetailScreenState();
+}
+
+class _MetricDetailScreenState extends State<MetricDetailScreen> {
+  final LocalStorageService _localStorage = LocalStorageService();
+  final AIDescriptionService _aiService = AIDescriptionService();
+  Timer? _dataUpdateTimer;
+  
+  List<HealthDataPoint> _weeklyData = [];
+  bool _isLoading = true;
+  String _aiInsight = '';
+  bool _isGeneratingInsight = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWeeklyData();
+    _generateAIInsight();
+    _startDataUpdates();
+  }
+
+  @override
+  void dispose() {
+    _dataUpdateTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startDataUpdates() {
+    _dataUpdateTimer = Timer.periodic(const Duration(minutes: 1), (timer) {
+      _loadWeeklyData();
+    });
+  }
+
+  Future<void> _loadWeeklyData() async {
+    try {
+      final now = DateTime.now();
+      final startDate = now.subtract(const Duration(days: 6));
+      
+      final hourlyData = await _localStorage.getHourlyAverages(startDate, now);
+      
+      final Map<String, List<HealthDataPoint>> dailyGroups = {};
+      
+      for (var dataPoint in hourlyData) {
+        final dayKey = _getDayKey(dataPoint.timestamp);
+        dailyGroups.putIfAbsent(dayKey, () => []).add(dataPoint);
+      }
+      
+      final List<HealthDataPoint> weeklyData = [];
+      
+      for (int i = 6; i >= 0; i--) {
+        final date = now.subtract(Duration(days: i));
+        final dayKey = _getDayKey(date);
+        final dayPoints = dailyGroups[dayKey] ?? [];
+        
+        if (dayPoints.isNotEmpty) {
+          weeklyData.add(_calculateDailyAverage(dayPoints));
+        } else {
+          weeklyData.add(HealthDataPoint(
+            heartRate: 0,
+            steps: 0,
+            spo2: 0,
+            calories: 0,
+            sleep: 0,
+            recovery: 0,
+            stress: 0,
+            rhr: 0,
+            hrv: 0,
+            bodyTemperature: 0,
+            breathingRate: 0,
+            timestamp: DateTime(date.year, date.month, date.day),
+          ));
+        }
+      }
+      
+      if (mounted) {
+        setState(() {
+          _weeklyData = weeklyData;
+          _isLoading = false;
+        });
+      }
+    } catch (e) {
+      print('Error loading weekly data: $e');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
+
+  String _getDayKey(DateTime date) {
+    return '${date.year}-${date.month}-${date.day}';
+  }
+
+  HealthDataPoint _calculateDailyAverage(List<HealthDataPoint> points) {
+    final avgHeartRate = points.map((e) => e.heartRate).reduce((a, b) => a + b) / points.length;
+    final avgSteps = points.map((e) => e.steps).reduce((a, b) => a + b) / points.length;
+    final avgSpo2 = points.map((e) => e.spo2).reduce((a, b) => a + b) / points.length;
+    final avgCalories = points.map((e) => e.calories).reduce((a, b) => a + b) / points.length;
+    final avgSleep = points.map((e) => e.sleep).reduce((a, b) => a + b) / points.length;
+    final avgRecovery = points.map((e) => e.recovery).reduce((a, b) => a + b) / points.length;
+    final avgStress = points.map((e) => e.stress).reduce((a, b) => a + b) / points.length;
+    final avgRhr = points.map((e) => e.rhr).reduce((a, b) => a + b) / points.length;
+    final avgHrv = points.map((e) => e.hrv).reduce((a, b) => a + b) / points.length;
+    final avgBodyTemperature = points.map((e) => e.bodyTemperature).reduce((a, b) => a + b) / points.length;
+    final avgBreathingRate = points.map((e) => e.breathingRate).reduce((a, b) => a + b) / points.length;
+
+    return HealthDataPoint(
+      heartRate: avgHeartRate.round(),
+      steps: avgSteps.round(),
+      spo2: avgSpo2.round(),
+      calories: avgCalories.round(),
+      sleep: avgSleep,
+      recovery: avgRecovery.round(),
+      stress: avgStress.round(),
+      rhr: avgRhr.round(),
+      hrv: avgHrv.round(),
+      bodyTemperature: avgBodyTemperature,
+      breathingRate: avgBreathingRate.round(),
+      timestamp: points.first.timestamp,
+    );
+  }
+
+  Future<void> _generateAIInsight() async {
+    setState(() {
+      _isGeneratingInsight = true;
+    });
+
+    try {
+      final insight = await _aiService.getMetricDescription(
+        metricName: widget.metricName,
+        currentValue: widget.currentValue,
+        unit: widget.unit,
+        currentData: null,
+        forceRefresh: true,
+      );
+
+      if (mounted) {
+        setState(() {
+          _aiInsight = insight;
+          _isGeneratingInsight = false;
+        });
+      }
+    } catch (e) {
+      print('Error generating AI insight: $e');
+      if (mounted) {
+        setState(() {
+          _isGeneratingInsight = false;
+          _aiInsight = 'Analyzing your ${widget.metricName.toLowerCase()} patterns...';
+        });
+      }
+    }
+  }
+
+  double _getMetricValue(HealthDataPoint point) {
+    switch (widget.metricName.toLowerCase()) {
+      case 'heart rate':
+        return point.heartRate.toDouble();
+      case 'sleep':
+        return point.sleep;
+      case 'steps':
+        return point.steps.toDouble();
+      case 'calories':
+        return point.calories.toDouble();
+      case 'oxygen':
+        return point.spo2.toDouble();
+      case 'recovery':
+        return point.recovery.toDouble();
+      case 'stress':
+        return point.stress.toDouble();
+      case 'resting heart rate':
+        return point.rhr.toDouble();
+      case 'hrv':
+        return point.hrv.toDouble();
+      case 'body temperature':
+        return point.bodyTemperature;
+      case 'breathing rate':
+        return point.breathingRate.toDouble();
+      default:
+        return 0.0;
+    }
+  }
+
+  String _getYAxisTitle() {
+    switch (widget.metricName.toLowerCase()) {
+      case 'heart rate':
+      case 'resting heart rate':
+      case 'breathing rate':
+        return 'BPM';
+      case 'sleep':
+        return 'Hours';
+      case 'steps':
+        return 'Steps';
+      case 'calories':
+        return 'Cal';
+      case 'oxygen':
+        return '%';
+      case 'recovery':
+      case 'stress':
+        return '%';
+      case 'hrv':
+        return 'ms';
+      case 'body temperature':
+        return '°C';
+      default:
+        return '';
+    }
+  }
+
+  (double, double) _getYAxisRange() {
+    final values = _weeklyData.map(_getMetricValue).where((v) => v > 0).toList();
+    if (values.isEmpty) return (0, 100);
+    
+    final minVal = values.reduce(min);
+    final maxVal = values.reduce(max);
+    
+    final padding = (maxVal - minVal) * 0.2;
+    
+    switch (widget.metricName.toLowerCase()) {
+      case 'heart rate':
+        return (40, 120);
+      case 'sleep':
+        return (0, 10);
+      case 'steps':
+        return (0, maxVal + 1000);
+      case 'calories':
+        return (0, maxVal + 500);
+      case 'oxygen':
+        return (85, 100);
+      case 'recovery':
+      case 'stress':
+        return (0, 100);
+      case 'resting heart rate':
+        return (40, 90);
+      case 'hrv':
+        return (0, 100);
+      case 'body temperature':
+        return (35, 39);
+      case 'breathing rate':
+        return (8, 25);
+      default:
+        return (minVal - padding, maxVal + padding);
+    }
+  }
+
+  Widget _buildGradientBorderCard({
+    required Widget child,
+    double borderRadius = 20,
+  }) {
+    return Container(
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(borderRadius),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF000000),
+            const Color.fromARGB(255, 9, 9, 9),
+            const Color.fromARGB(255, 126, 126, 126).withOpacity(0.3),
+            const Color.fromARGB(255, 9, 9, 9),
+            const Color(0xFF000000),
+          ],
+          stops: const [0.0, 0.2, 0.5, 0.8, 1.0],
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(1.5),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(borderRadius - 1.5),
+            color: const Color(0xFF0D0D0D).withOpacity(0.9),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCurrentValueCard() {
+    return _buildGradientBorderCard(
+      child: Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18.5),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFF1A1A1A).withOpacity(0.8),
+              const Color(0xFF0D0D0D).withOpacity(0.9),
+            ],
+          ),
+        ),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        widget.color.withOpacity(0.2),
+                        widget.color.withOpacity(0.1),
+                      ],
+                    ),
+                  ),
+                  child: Icon(widget.icon, color: widget.color, size: 24),
+                ),
+                const SizedBox(width: 16),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.metricName,
+                      style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: const Color(0xFFE8E8E8),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    Text(
+                      'Current Value',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: const Color(0xFFA0A0A0),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.baseline,
+              textBaseline: TextBaseline.alphabetic,
+              children: [
+                Text(
+                  widget.currentValue,
+                  style: Theme.of(context).textTheme.displayLarge?.copyWith(
+                    fontSize: 48,
+                    fontWeight: FontWeight.w700,
+                    color: widget.color,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  widget.unit,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: const Color(0xFFA0A0A0),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWeeklyTrendChart() {
+    final spots = _weeklyData.asMap().entries.map((entry) {
+      final index = entry.key;
+      final dataPoint = entry.value;
+      final value = _getMetricValue(dataPoint);
+      return FlSpot(index.toDouble(), value > 0 ? value : 0);
+    }).toList();
+
+    final (minY, maxY) = _getYAxisRange();
+    final yAxisTitle = _getYAxisTitle();
+
+    return _buildGradientBorderCard(
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18.5),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFF1A1A1A).withOpacity(0.8),
+              const Color(0xFF0D0D0D).withOpacity(0.9),
+            ],
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  '7-Day Trend',
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: const Color(0xFFE8E8E8),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: widget.color.withOpacity(0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: widget.color.withOpacity(0.3),
+                      width: 1,
+                    ),
+                  ),
+                  child: Text(
+                    'Weekly View',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: widget.color,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            SizedBox(
+              height: 250,
+              child: LineChart(
+                LineChartData(
+                  gridData: FlGridData(
+                    show: true,
+                    drawVerticalLine: false,
+                    drawHorizontalLine: true,
+                    getDrawingHorizontalLine: (value) {
+                      return FlLine(
+                        color: const Color(0xFF333333),
+                        strokeWidth: 1,
+                      );
+                    },
+                  ),
+                  titlesData: FlTitlesData(
+                    show: true,
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 30,
+                        getTitlesWidget: (value, meta) {
+                          const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+                          return value >= 0 && value < days.length
+                              ? Padding(
+                                  padding: const EdgeInsets.only(top: 8.0),
+                                  child: Text(
+                                    days[value.toInt()],
+                                    style: const TextStyle(
+                                      color: Color(0xFFA0A0A0),
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                )
+                              : const SizedBox();
+                        },
+                      ),
+                    ),
+                    leftTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        reservedSize: 40,
+                        getTitlesWidget: (value, meta) {
+                          return Text(
+                            value.toInt().toString(),
+                            style: const TextStyle(
+                              color: Color(0xFFA0A0A0),
+                              fontSize: 12,
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                    rightTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                    topTitles: const AxisTitles(
+                      sideTitles: SideTitles(showTitles: false),
+                    ),
+                  ),
+                  borderData: FlBorderData(
+                    show: true,
+                    border: Border.all(color: const Color(0xFF333333)),
+                  ),
+                  minY: minY,
+                  maxY: maxY,
+                  lineBarsData: [
+                    LineChartBarData(
+                      spots: spots,
+                      isCurved: true,
+                      color: widget.color,
+                      barWidth: 4,
+                      belowBarData: BarAreaData(
+                        show: true,
+                        gradient: LinearGradient(
+                          colors: [
+                            widget.color.withOpacity(0.3),
+                            widget.color.withOpacity(0.1),
+                          ],
+                        ),
+                      ),
+                      dotData: const FlDotData(
+                        show: true,
+                        getDotPainter: (spot, percent, barData, index) {
+                          return FlDotCirclePainter(
+                            radius: 4,
+                            color: Colors.white,
+                            strokeWidth: 2,
+                            strokeColor: widget.color,
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Center(
+              child: Text(
+                yAxisTitle,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFFA0A0A0),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAIInsightsCard() {
+    return _buildGradientBorderCard(
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(18.5),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              const Color(0xFF1A1A1A).withOpacity(0.8),
+              const Color(0xFF0D0D0D).withOpacity(0.9),
+            ],
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.auto_awesome_rounded,
+                  color: Color(0xFF808080),
+                  size: 20,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'AI Insights',
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: const Color(0xFFE8E8E8),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const Spacer(),
+                if (!_isGeneratingInsight)
+                  IconButton(
+                    icon: const Icon(
+                      Icons.refresh_rounded,
+                      color: Color(0xFF808080),
+                      size: 16,
+                    ),
+                    onPressed: _generateAIInsight,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 24,
+                      minHeight: 24,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _isGeneratingInsight
+                ? Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            Color(0xFF808080),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Generating insights...',
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: const Color(0xFF808080),
+                          fontStyle: FontStyle.italic,
+                        ),
+                      ),
+                    ],
+                  )
+                : Text(
+                    _aiInsight,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF808080),
+                      fontSize: 14,
+                      height: 1.5,
+                    ),
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0D0D0D),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Header with back button
+              Row(
+                children: [
+                  _buildGradientBorderCard(
+                    borderRadius: 12,
+                    child: Material(
+                      color: Colors.transparent,
+                      child: IconButton(
+                        icon: const Icon(Icons.arrow_back_rounded, color: Color(0xFFE8E8E8)),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.metricName,
+                          style: Theme.of(context).textTheme.displayMedium?.copyWith(
+                            color: const Color(0xFFE8E8E8),
+                          ),
+                        ),
+                        Text(
+                          'Detailed analysis and trends',
+                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: const Color(0xFFA0A0A0),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              if (_isLoading)
+                Center(
+                  child: CircularProgressIndicator(
+                    color: widget.color,
+                  ),
+                )
+              else ...[
+                // Current Value Card
+                _buildCurrentValueCard(),
+                const SizedBox(height: 20),
+
+                // AI Insights
+                _buildAIInsightsCard(),
+                const SizedBox(height: 20),
+
+                // Weekly Trend Chart
+                _buildWeeklyTrendChart(),
+                const SizedBox(height: 20),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
