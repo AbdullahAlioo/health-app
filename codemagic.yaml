@@ -7,10 +7,20 @@ workflows:
     scripts:
       - name: Install dependencies
         script: flutter pub get
-      - name: Build iOS IPA
-        script: flutter build ipa --release --no-codesign
+      - name: Build iOS for Real Device
+        script: |
+          # Build the native files for a real iPhone
+          flutter build ios --release --no-codesign
+      - name: Manually Create IPA
+        script: |
+          # Create a 'Payload' folder (this is the secret IPA format)
+          mkdir -p Payload
+          # Copy the built app bundle into the Payload folder
+          cp -r build/ios/iphoneos/Runner.app Payload/
+          # Zip it and name it Zyora.ipa
+          zip -r Zyora.ipa Payload
     artifacts:
-      - build/ios/ipa/*.ipa
+      - "*.ipa" # Look for the Zyora.ipa in the root folder
     publishing:
       email:
         recipients:
