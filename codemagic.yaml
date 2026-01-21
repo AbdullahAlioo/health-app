@@ -7,14 +7,10 @@ workflows:
     scripts:
       - name: Install dependencies
         script: flutter pub get
-      - name: Build iOS Simulator
-        script: flutter build ios --simulator
-      - name: Create Artifact Directory
-        script: mkdir -p build/ios/ipa
-      - name: Zip Artifacts
-        script: zip -r build/ios/ipa/Runner.app.zip build/ios/iphonesimulator/Runner.app
+      - name: Build iOS IPA
+        script: flutter build ipa --release --no-codesign
     artifacts:
-      - build/ios/ipa/Runner.app.zip
+      - build/ios/ipa/*.ipa
     publishing:
       email:
         recipients:
