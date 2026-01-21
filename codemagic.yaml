@@ -1,0 +1,29 @@
+workflows:
+  ios-build:
+    name: Zyora iOS Build
+    max_build_duration: 60
+    instance_type: mac_mini_m1
+    environment:
+      flutter: stable
+      xcode: latest
+      groups:
+        - apple_auth # Reference to your Apple Developer credentials in CodeMagic UI
+    scripts:
+      - name: Install dependencies
+        script: |
+          flutter pub get
+      - name: Configure Pods and Permissions
+        script: |
+          cd ios
+          # This command ensures the Podfile exists and has our Bluetooth settings
+          pod install
+      - name: Build iOS IPA
+        script: |
+          # We build for real devices (release) so you can actually test the Band
+          flutter build ios --release --no-codesign
+    artifacts:
+      - build/ios/iphoneos/*.app
+    publishing:
+      email:
+        recipients:
+          - abdullahalicoder@gmail.com # Change this to your email!
